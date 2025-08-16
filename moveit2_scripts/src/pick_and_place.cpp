@@ -13,6 +13,7 @@
 #include <thread>
 #include <vector>
 #include <limits>
+#include <chrono>  // for sleep_for durations
 
 using moveit::planning_interface::MoveGroupInterface;
 
@@ -126,34 +127,75 @@ public:
         return planAndExecCartesian();
     }
 
+    bool retreatDelta(float dx, float dy, float dz) {
+        RCLCPP_INFO(LOGGER, "[Step] Retreat (Cartesian)");
+        setup_waypoints_target(dx, dy, dz);
+        return planAndExecCartesian();
+    }
+
 
     void execute_trajectory_plan() {
-        RCLCPP_INFO(LOGGER, "=== STEP 3: GoHome → Pregrasp (pose) → Approach (Cartesian) ===");
+        using namespace std::chrono_literals;
+        RCLCPP_INFO(LOGGER, "=== STEP 4: GoHome → Pregrasp → Open → Approach → Close → Short Retreat ===");
 
-        // Arm speed slightly conservative in this step
+        // Conservative arm speed
         mg_robot_->setMaxVelocityScalingFactor(0.30);
         mg_robot_->setMaxAccelerationScalingFactor(0.30);
 
-        if (!goHome()) {
-            RCLCPP_ERROR(LOGGER, "GoHome FAILED");
-            return;
-        }
+        // robot should start due to specification, with closed gripper. Basic close (named).
+        if (!closeGripperNamed()) { RCLCPP_ERROR(LOGGER, "CloseGripper FAILED"); return; }
 
-        // Example pre-grasp above object; adjust XYZ for your scene.
-        // Quaternion here is 180° about X: (-1, 0, 0, 0) so tool Z points down.
+        if (!goHome()) { RCLCPP_ERROR(LOGGER, "GoHome FAILED"); return; }
+
+        // Pregrasp pose — adjust XYZ/quaternion for your scene
         if (!goToPregrasp(+0.340f, -0.020f, +0.260f, -1.000f, 0.000f, 0.000f, 0.000f)) {
-            RCLCPP_ERROR(LOGGER, "Pregrasp FAILED");
-            return;
+            RCLCPP_ERROR(LOGGER, "Pregrasp FAILED"); return;
         }
 
-        // Cartesian approach down by 5 cm (tune as needed)
-        if (!approachDelta(0.0, 0.0, -0.08)) {
-            RCLCPP_ERROR(LOGGER, "Approach FAILED (low path fraction or exec error)");
-            return;
+        if (!openGripper()) { RCLCPP_ERROR(LOGGER, "OpenGripper FAILED"); return; }
+
+        // Approach straight down (tune magnitude)
+        if (!approachDelta(0.0f, 0.0f, -0.090f)) {
+            RCLCPP_ERROR(LOGGER, "Approach FAILED"); return;
         }
 
-        RCLCPP_INFO(LOGGER, "STEP 3 DONE.");
+        // Basic close (named). This is not yet contact-aware; STEP 5 will improve this.
+        if (!closeGripperNamed()) { RCLCPP_ERROR(LOGGER, "CloseGripper FAILED"); return; }
+
+        // Small settle before lift to reduce kick
+        std::this_thread::sleep_for(200ms);
+
+        // Very gentle short lift (first success taste; STEP 6 will refine speed shaping)
+        mg_robot_->setMaxVelocityScalingFactor(0.10);
+        mg_robot_->setMaxAccelerationScalingFactor(0.05);
+        if (!retreatDelta(0.0f, 0.0f, +0.090f)) { RCLCPP_ERROR(LOGGER, "Retreat FAILED"); return; }
+
+        // Restore nominal conservative speed after lift
+        mg_robot_->setMaxVelocityScalingFactor(0.30);
+        mg_robot_->setMaxAccelerationScalingFactor(0.30);
+
+        RCLCPP_INFO(LOGGER, "STEP 4 DONE (basic pick + short retreat).");
     }
+
+
+    bool openGripper() {
+        RCLCPP_INFO(LOGGER, "[Step] Open Gripper");
+        setup_named_pose_gripper("gripper_open");
+        // keep gripper slow and gentle
+        mg_gripper_->setMaxVelocityScalingFactor(0.03);
+        mg_gripper_->setMaxAccelerationScalingFactor(0.02);
+        return planAndExecGripper();
+    }
+
+    bool closeGripperNamed() {
+        RCLCPP_INFO(LOGGER, "[Step] Close Gripper (named)");
+        setup_named_pose_gripper("gripper_close");
+        mg_gripper_->setMaxVelocityScalingFactor(0.03);
+        mg_gripper_->setMaxAccelerationScalingFactor(0.02);
+        return planAndExecGripper();
+    }
+
+
 
 
 private:
@@ -261,6 +303,37 @@ private:
         return ok;
     }
 
+
+    // --- Gripper planning hygiene (mirrors the arm helpers) ---
+    void prepareForNewGoalGripper(bool clear_pose_targets = true) {
+        mg_gripper_->stop();
+        if (clear_pose_targets) mg_gripper_->clearPoseTargets();
+        mg_gripper_->clearPathConstraints();
+        mg_gripper_->setStartStateToCurrentState();
+    }
+
+    // Set a named gripper target (e.g., "gripper_open", "gripper_close")
+    void setup_named_pose_gripper(const std::string& pose_name) {
+        prepareForNewGoalGripper(true);
+        mg_gripper_->setNamedTarget(pose_name);
+        RCLCPP_INFO(LOGGER, "[Target] Gripper named target: %s", pose_name.c_str());
+    }
+
+    // Plan+execute for the gripper group with clear prints
+    bool planAndExecGripper() {
+        mg_gripper_->setStartStateToCurrentState();
+        moveit::planning_interface::MoveGroupInterface::Plan plan;
+        bool planned = (mg_gripper_->plan(plan) == moveit::core::MoveItErrorCode::SUCCESS);
+        if (!planned) {
+            RCLCPP_WARN(LOGGER, "[Plan] Gripper plan FAILED");
+            return false;
+        }
+        RCLCPP_INFO(LOGGER, "[Plan] Gripper plan OK. Executing…");
+        auto ret = mg_gripper_->execute(plan);
+        bool ok = (ret == moveit::core::MoveItErrorCode::SUCCESS);
+        RCLCPP_INFO(LOGGER, ok ? "[Exec] Gripper EXECUTION SUCCESS" : "[Exec] Gripper EXECUTION FAILED");
+        return ok;
+    }
 
     // keep a handle to the single node we’re reusing
     rclcpp::Node::SharedPtr base_node_;
