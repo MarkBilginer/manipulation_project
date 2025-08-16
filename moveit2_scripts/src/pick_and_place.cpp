@@ -90,31 +90,101 @@ public:
     RCLCPP_INFO(LOGGER, "Shutting down PickAndPlaceTrajectory.");
   }
 
+    // STEP 2: one safe motion to a known joint configuration
+    bool goHome() {
+        RCLCPP_INFO(LOGGER, "[Step] Go Home (joint goal)");
+        // UR-style joint order: shoulder_pan, shoulder_lift, elbow, wrist1, wrist2, wrist3
+        // This is a neutral pose you can adjust later.
+        setup_joint_value_target(+0.0000, -2.3562, +1.5708, -1.5708, -1.5708, +0.0000);
+
+        // Conservative speed and goal tolerances for safety/robustness.
+        mg_robot_->setMaxVelocityScalingFactor(0.30);
+        mg_robot_->setMaxAccelerationScalingFactor(0.30);
+        mg_robot_->setGoalJointTolerance(0.005);      // ≈ 0.29°
+        mg_robot_->setGoalPositionTolerance(0.005);   // 5 mm (mainly for pose goals)
+        mg_robot_->setGoalOrientationTolerance(0.02); // ~1.15°
+
+        return planAndExecKinematics();
+    }
+
+    // One-shot runner for STEP 2
+    void execute_trajectory_plan() {
+    RCLCPP_INFO(LOGGER, "=== STEP 2: executing single GoHome motion ===");
+    if (!goHome()) {
+        RCLCPP_ERROR(LOGGER, "GoHome FAILED");
+        return;
+    }
+    RCLCPP_INFO(LOGGER, "GoHome DONE");
+    }
+
+
 private:
-  bool readJoint(const moveit::core::RobotState& st, const std::string& name, double& out) {
+    bool readJoint(const moveit::core::RobotState& st, const std::string& name, double& out) {
     const auto& names = st.getVariableNames();
     auto it = std::find(names.begin(), names.end(), name);
     if (it == names.end()) return false;
     out = st.getVariablePosition(name);
     return true;
-  }
+    }
 
-  // keep a handle to the single node we’re reusing
-  rclcpp::Node::SharedPtr base_node_;
-  rclcpp::executors::SingleThreadedExecutor executor_;
-  std::shared_ptr<MoveGroupInterface> mg_robot_;
-  std::shared_ptr<MoveGroupInterface> mg_gripper_;
+    // Make sure we always start planning from a clean state.
+    // - stop any residual motion
+    // - clear stale pose targets / constraints
+    // - snapshot the CURRENT robot state as planner start
+    void prepareForNewGoal(bool clear_pose_targets = true) {
+        mg_robot_->stop();
+        if (clear_pose_targets) mg_robot_->clearPoseTargets();
+        mg_robot_->clearPathConstraints();
+        mg_robot_->setStartStateToCurrentState();
+    }
+
+    // Set a 6-DoF joint target (UR-style order).
+    // Adds an info print so you can verify exactly what was sent.
+    void setup_joint_value_target(float a0, float a1, float a2, float a3, float a4, float a5) {
+    prepareForNewGoal(true);
+    std::vector<double> q = {a0, a1, a2, a3, a4, a5};
+    mg_robot_->setJointValueTarget(q);
+    RCLCPP_INFO(LOGGER, "[Target] Joint goal set: [%.4f %.4f %.4f %.4f %.4f %.4f]",
+                a0, a1, a2, a3, a4, a5);
+    }
+
+    // Plan a kinematics trajectory and execute it.
+    // We log both the planning result and the execution result.
+    bool planAndExecKinematics() {
+    // Refresh start state right before planning (in case joints changed)
+    mg_robot_->setStartStateToCurrentState();
+
+    moveit::planning_interface::MoveGroupInterface::Plan plan;
+    bool planned = (mg_robot_->plan(plan) == moveit::core::MoveItErrorCode::SUCCESS);
+    if (!planned) {
+        RCLCPP_WARN(LOGGER, "[Plan] Kinematics plan FAILED");
+        return false;
+    }
+    RCLCPP_INFO(LOGGER, "[Plan] Kinematics plan OK. Executing…");
+
+    auto ret = mg_robot_->execute(plan);
+    bool exec_ok = (ret == moveit::core::MoveItErrorCode::SUCCESS);
+    RCLCPP_INFO(LOGGER, exec_ok ? "[Exec] Robot kinematics EXECUTION SUCCESS"
+                                : "[Exec] Robot kinematics EXECUTION FAILED");
+    return exec_ok;
+    }
+
+
+    // keep a handle to the single node we’re reusing
+    rclcpp::Node::SharedPtr base_node_;
+    rclcpp::executors::SingleThreadedExecutor executor_;
+    std::shared_ptr<MoveGroupInterface> mg_robot_;
+    std::shared_ptr<MoveGroupInterface> mg_gripper_;
 };
 
 int main(int argc, char** argv) {
-  rclcpp::init(argc, argv);
-  auto base_node = std::make_shared<rclcpp::Node>("pick_and_place_trajectory");
-  PickAndPlaceTrajectory app(base_node);
+    rclcpp::init(argc, argv);
+    auto base_node = std::make_shared<rclcpp::Node>("pick_and_place_trajectory");
+    PickAndPlaceTrajectory app(base_node);
 
-  // Keep process alive while background executor spins
-  rclcpp::Rate rate(10.0);
-  while (rclcpp::ok()) rate.sleep();
+    //run once, then exit
+    app.execute_trajectory_plan();
 
-  rclcpp::shutdown();
-  return 0;
+    rclcpp::shutdown();
+    return 0;
 }
