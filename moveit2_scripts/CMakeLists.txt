@@ -20,11 +20,27 @@ find_package(moveit_msgs REQUIRED)
 # ————————————————————————————
 # build pick_and_place
 # ————————————————————————————
-add_executable(pick_and_place
-  src/pick_and_place.cpp
+add_executable(pick_and_place_sim
+  src/pick_and_place_sim.cpp
 )
 
-ament_target_dependencies(pick_and_place
+add_executable(pick_and_place_real
+  src/pick_and_place_real.cpp
+)
+
+ament_target_dependencies(pick_and_place_sim
+  rclcpp
+  rclcpp_action
+  moveit_core
+  moveit_ros_planning
+  moveit_ros_planning_interface
+  interactive_markers
+  geometric_shapes
+  control_msgs
+  moveit_msgs
+)
+
+ament_target_dependencies(pick_and_place_real
   rclcpp
   rclcpp_action
   moveit_core
@@ -52,7 +68,12 @@ endif()
 # install
 # ————————————————————————————
 install(
-  TARGETS pick_and_place
+  TARGETS pick_and_place_real
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+install(
+  TARGETS pick_and_place_sim
   DESTINATION lib/${PROJECT_NAME}
 )
 
