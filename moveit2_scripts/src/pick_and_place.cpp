@@ -70,6 +70,18 @@ public:
         "RRTConnectkConfigDefault"); // pick a specific OMPL planner
     mg_robot_->setPlanningTime(5.0); // enough time but not huge
 
+    // Conservative speed and goal tolerances for safety/robustness.
+    mg_robot_->setMaxVelocityScalingFactor(0.30);
+    mg_robot_->setMaxAccelerationScalingFactor(0.30);
+    mg_robot_->setGoalPositionTolerance(0.01);    // 2 mm
+    mg_robot_->setGoalOrientationTolerance(0.01); // ~0.057°
+    mg_robot_->setGoalJointTolerance(0.01);       // ~0.17°
+
+    mg_gripper_->setMaxVelocityScalingFactor(0.3);
+    mg_gripper_->setMaxAccelerationScalingFactor(0.3);
+    mg_gripper_->setGoalJointTolerance(0.005); // tighter tolerance for reliable gripping
+
+
     RCLCPP_INFO(
         LOGGER,
         "[Cfg] Using frame='world', planner='RRTConnectkConfigDefault', "
@@ -132,13 +144,6 @@ public:
     setup_joint_value_target(+0.0000, -2.3562, +1.5708, -1.5708, -1.5708,
                              +0.0000);
 
-    // Conservative speed and goal tolerances for safety/robustness.
-    mg_robot_->setMaxVelocityScalingFactor(0.30);
-    mg_robot_->setMaxAccelerationScalingFactor(0.30);
-    mg_robot_->setGoalPositionTolerance(0.001);    // 2 mm
-    mg_robot_->setGoalOrientationTolerance(0.001); // ~0.057°
-    mg_robot_->setGoalJointTolerance(0.001);       // ~0.17°
-
     return planAndExecKinematics();
   }
 
@@ -163,85 +168,6 @@ public:
     RCLCPP_INFO(LOGGER, "[Step] Retreat (Cartesian)");
     setup_waypoints_target(dx, dy, dz);
     return planAndExecCartesian();
-  }
-
-  void execute_trajectory_plan() {
-    using namespace std::chrono_literals;
-    RCLCPP_INFO(LOGGER, "=== STEP 5: Close → GoHome → Pregrasp → Open → "
-                        "Approach → Incremental Close → Slow Lift ===");
-
-    // Close first (spec requirement; safe start)
-    if (!closeGripperNamed()) {
-      RCLCPP_ERROR(LOGGER, "Initial Close FAILED");
-      return;
-    }
-
-    if (!goHome()) {
-      RCLCPP_ERROR(LOGGER, "GoHome FAILED");
-      return;
-    }
-
-    // Define your desired orientation in RPY (radians)
-    double roll = M_PI; // rotation about X
-    double pitch = 0.0; // rotation about Y (90°)
-    double yaw = 0.0;   // rotation about Z
-
-    // Build quaternion from RPY
-    tf2::Quaternion q;
-    q.setRPY(roll, pitch, yaw);
-    q.normalize(); // make sure it's a valid unit quaternion
-
-    // Extract values
-    double qx = q.x();
-    double qy = q.y();
-    double qz = q.z();
-    double qw = q.w();
-
-    // Now call your goToPregrasp with these values
-    if (!goToPregrasp(+0.341f, -0.022f, +0.260f, (float)qx, (float)qy,
-                      (float)qz, (float)qw)) {
-      RCLCPP_ERROR(LOGGER, "Pregrasp FAILED");
-      return;
-    }
-
-    if (!openGripper()) {
-      RCLCPP_ERROR(LOGGER, "OpenGripper FAILED");
-      return;
-    }
-
-    if (!approachDelta(0.0f, 0.0f, -0.085f)) {
-      RCLCPP_ERROR(LOGGER, "Approach FAILED");
-      return;
-    }
-
-    if (!closeGripperRamp(0.55, 0.6441, 0.12, 0.08, 0.0001, 0.0003, 20)) {
-      RCLCPP_ERROR(LOGGER, "Incremental close FAILED");
-      return;
-    }
-
-    std::this_thread::sleep_for(1s); // small settle before lift
-
-    // Very slow first lift to avoid kick
-    mg_robot_->setMaxVelocityScalingFactor(0.10);
-    mg_robot_->setMaxAccelerationScalingFactor(0.05);
-    if (!retreatDelta(0.0f, 0.0f, +0.085f)) {
-      RCLCPP_ERROR(LOGGER, "Retreat FAILED");
-      return;
-    }
-
-    if (!turnShoulder180())
-      return;
-
-    std::this_thread::sleep_for(200ms); // small settle
-
-    if (!openGripper())
-      return;
-
-    // Restore conservative speed
-    mg_robot_->setMaxVelocityScalingFactor(0.30);
-    mg_robot_->setMaxAccelerationScalingFactor(0.30);
-
-    RCLCPP_INFO(LOGGER, "DONE");
   }
 
   bool openGripper() {
@@ -285,6 +211,89 @@ public:
     mg_robot_->setMaxAccelerationScalingFactor(0.1);
 
     return planAndExecKinematics();
+  }
+
+  void execute_trajectory_plan() {
+    using namespace std::chrono_literals;
+    RCLCPP_INFO(LOGGER, "=== STEP 5: Close → GoHome → Pregrasp → Open → "
+                        "Approach → Incremental Close → Slow Lift ===");
+
+    // Close first (spec requirement; safe start)
+    if (!closeGripperNamed()) {
+     RCLCPP_ERROR(LOGGER, "Initial Close FAILED");
+    return;
+    }
+    //if (!openGripper()) {
+      //RCLCPP_ERROR(LOGGER, "OpenGripper FAILED");
+      //return;
+    //}
+
+    if (!goHome()) {
+      RCLCPP_ERROR(LOGGER, "GoHome FAILED");
+      return;
+    }
+
+    // Define your desired orientation in RPY (radians)
+    double roll = M_PI; // rotation about X
+    double pitch = 0.0; // rotation about Y (90°)
+    double yaw = 0.0;   // rotation about Z
+
+    // Build quaternion from RPY
+    tf2::Quaternion q;
+    q.setRPY(roll, pitch, yaw);
+    q.normalize(); // make sure it's a valid unit quaternion
+
+    // Extract values
+    double qx = q.x();
+    double qy = q.y();
+    double qz = q.z();
+    double qw = q.w();
+
+    // Now call your goToPregrasp with these values
+    if (!goToPregrasp(+0.343f, 0.132f, +0.260f, (float)qx, (float)qy, (float)qz,
+                      (float)qw)) {
+      RCLCPP_ERROR(LOGGER, "Pregrasp FAILED");
+      return;
+    }
+
+    if (!openGripper()) {
+      RCLCPP_ERROR(LOGGER, "OpenGripper FAILED");
+      return;
+    }
+
+    if (!approachDelta(0.0f, 0.0f, -0.050f)) {
+      RCLCPP_ERROR(LOGGER, "Approach FAILED");
+      return;
+    }
+
+    if (!closeGripperRamp(0.55, 0.780, 0.12, 0.08, 0.0001, 0.0003, 20)) {
+      RCLCPP_ERROR(LOGGER, "Incremental close FAILED");
+      return;
+    }
+
+    std::this_thread::sleep_for(1s); // small settle before lift
+
+    // Very slow first lift to avoid kick
+    mg_robot_->setMaxVelocityScalingFactor(0.10);
+    mg_robot_->setMaxAccelerationScalingFactor(0.05);
+    if (!retreatDelta(0.0f, 0.0f, +0.085f)) {
+      RCLCPP_ERROR(LOGGER, "Retreat FAILED");
+      return;
+    }
+
+    if (!turnShoulder180())
+      return;
+
+    std::this_thread::sleep_for(200ms); // small settle
+
+    if (!openGripper())
+      return;
+
+    // Restore conservative speed
+    mg_robot_->setMaxVelocityScalingFactor(0.30);
+    mg_robot_->setMaxAccelerationScalingFactor(0.30);
+
+    RCLCPP_INFO(LOGGER, "DONE");
   }
 
 private:
@@ -556,7 +565,7 @@ private:
 
   double cart_fraction_ = 0.0;        // [0..1]
   const double jump_threshold_ = 0.0; // disable jump detection
-  const double eef_step_ = 0.0001;    // 0.1 mm step for interpolation
+  const double eef_step_ = 0.001;     // 1 mm step for interpolation
 };
 
 int main(int argc, char **argv) {
